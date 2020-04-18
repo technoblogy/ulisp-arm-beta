@@ -1,4 +1,4 @@
-/* uLisp ARM 3.2 Beta - www.ulisp.com
+/* uLisp ARM 3.2 Beta 2 - www.ulisp.com
    David Johnson-Davies - www.technoblogy.com - unreleased
 
    Licensed under the MIT license: https://opensource.org/licenses/MIT
@@ -964,21 +964,31 @@ int nextpower2 (int n) {
   return n;
 }
 
-object *makearray (int n, int s, object *def) {
+object *buildarray (int n, int s, object *def) {
   int s2 = s>>1;
   if (s2 == 1) { if (n == 2) return cons(def, def); else return cons(def, NULL); }
-  else if (n >= s2) return cons(makearray(s2, s2, def), makearray(n - s2, s2, def));
-  else return cons(makearray(n, s2, def), nil);
+  else if (n >= s2) return cons(buildarray(s2, s2, def), buildarray(n - s2, s2, def));
+  else return cons(buildarray(n, s2, def), nil);
 }
 
-object **getarray (object *array, int x, int y) {
+object *makearray (int xd, int yd, object *dimensions, object *def) {
+  int size = xd * yd;
+  object *ptr = myalloc();
+  ptr->type = ARRAY;
+  object *tree = nil;
+  if (size != 0) tree = buildarray(size, max(nextpower2(size), 2), def);
+  ptr->cdr = cons(tree, dimensions);
+  return ptr;
+}
+
+object **getarray (symbol_t name, object *array, int x, int y) {
   object *dimensions = cddr(array);
   int xd, yd = 1;
   if (listp(dimensions)) { xd = first(dimensions)->integer; yd = second(dimensions)->integer; }
   else xd = dimensions->integer;
   int size = xd * yd;
   int index = x * yd + y;
-  if (index >= size || index < 0) error2(AREF, PSTR("index out of range"));
+  if (index >= size || index < 0) error2(name, PSTR("index out of range"));
   int mask = max(nextpower2(size), 2)>>1;
   object **p = &car(cdr(array));
   while (mask) {
@@ -988,25 +998,57 @@ object **getarray (object *array, int x, int y) {
   return p;
 }
 
+object *listtovector (object *list) {
+  int xd = listlength(0, list);
+  object *array = makearray(xd, 1, number(xd), NULL);
+  int p = 0;
+  while (list != NULL) {
+    object **loc = getarray(0, array, p++, 0);
+    *loc = first(list);
+    list = cdr(list);
+  }
+  return array;
+}
+
+object *listto2darray (object *list) {
+  int xd = listlength(0, list);
+  if (list == NULL || !listp(first(list))) error2(0, PSTR("initial contents not 2d array"));
+  int yd = listlength(0, first(list));
+  object *array = makearray(xd, yd, cons(number(xd), cons(number(yd), NULL)), NULL);
+  int x = 0;
+  while (list != NULL) {
+    object *item = first(list);
+    int y = 0;
+    while (item != NULL) {
+      object **loc = getarray(0, array, x, y++);
+      *loc = first(item);
+      item = cdr(item);
+    }
+    x++;
+    list = cdr(list);
+  }
+  return array;
+}
+
 void printarray (object *array, pfun_t pfun) {
   object *dimensions = cddr(array);
   if (listp(dimensions)) {
     int xd = first(dimensions)->integer, yd = second(dimensions)->integer;
-    pfstring(PSTR("#2A("), pfun);
+    pfun('#'); pfstring(PSTR("2A("), pfun);
     for (int x=0; x<xd; x++) {
       if (x) pfun(' '); pfun('(');
       for (int y=0; y<yd; y++) {
         if (y) pfun(' ');
-        printobject(*getarray(array, x, y), pfun);
+        printobject(*getarray(0, array, x, y), pfun);
       }
       pfun(')');
     }  
   } else {
-    pfstring(PSTR("#("), pfun);
+    pfun('#'); pfun('(');
     int xd = dimensions->integer;
     for (int x=0; x<xd; x++) {
       if (x) pfun(' ');
-      printobject(*getarray(array, x, 0), pfun);
+      printobject(*getarray(0, array, x, 0), pfun);
     }
   }
   pfun(')');
@@ -1254,7 +1296,7 @@ object **place (symbol_t name, object *args, object *env) {
       if (cddr(args) == NULL) error2(AREF, PSTR("array needs two subscripts"));
       y = checkinteger(AREF, eval(third(args), env));
     } else if (cddr(args) != NULL) error2(AREF, PSTR("array needs one subscript"));
-    return getarray(array, x, y);
+    return getarray(AREF, array, x, y);
   }
   error2(name, PSTR("illegal place"));
   return nil;
@@ -2469,8 +2511,8 @@ object *fn_length (object *args, object *env) {
   object *arg = first(args);
   if (listp(arg)) return number(listlength(LENGTH, arg));
   if (stringp(arg)) return number(stringlength(arg));
-  if (arrayp(arg)) return number(cddr(arg)->integer);
-  error(LENGTH, PSTR("argument is not a list, array, or string"), arg);
+  if (arrayp(arg) && integerp(cddr(arg))) return number(cddr(arg)->integer);
+  error(LENGTH, PSTR("argument is not a list, 1d array, or string"), arg);
 }
 
 object *fn_arraydimensions (object *args, object *env) {
@@ -2487,26 +2529,21 @@ object *fn_list (object *args, object *env) {
 object *fn_makearray (object *args, object *env) {
   (void) env;
   object *def = nil;
-  int size;
+  int xd, yd = 1;
   object *dimensions = first(args);
   if (listp(dimensions)) {
     if (dimensions == NULL) error2(MAKEARRAY, PSTR("dimensions can't be nil"));
-    else if (cdr(dimensions) == NULL) { dimensions = cdr(dimensions); size = checkinteger(MAKEARRAY, dimensions); }
+    else if (cdr(dimensions) == NULL) { dimensions = cdr(dimensions); xd = checkinteger(MAKEARRAY, dimensions); }
     else if (cddr(dimensions) != NULL) error2(MAKEARRAY, PSTR("only two dimensions supported"));
-    else size = checkinteger(MAKEARRAY, first(dimensions)) * checkinteger(MAKEARRAY, second(dimensions));
-  } else size = checkinteger(MAKEARRAY, dimensions);
+    else xd = checkinteger(MAKEARRAY, first(dimensions)); yd = checkinteger(MAKEARRAY, second(dimensions));
+  } else xd = checkinteger(MAKEARRAY, dimensions);
   if (cdr(args) != NULL) {
     object *var = second(args);
     if (!symbolp(var) || var->name != INITIALELEMENT)
       error(MAKEARRAY, PSTR("illegal second argument"), var); 
     if (cddr(args) != NULL) def = third(args);
   }
-  object *ptr = myalloc();
-  ptr->type = ARRAY;
-  object *tree = nil;
-  if (size != 0) tree = makearray(size, max(nextpower2(size), 2), def);
-  ptr->cdr = cons(tree, dimensions);
-  return ptr;
+  return makearray(xd, yd, dimensions, def);
 }
 
 object *fn_reverse (object *args, object *env) {
@@ -2543,7 +2580,7 @@ object *fn_aref (object *args, object *env) {
     if (cddr(args) == NULL) error2(AREF, PSTR("array needs two subscripts"));
     y = checkinteger(AREF, third(args));
   } else if (cddr(args) != NULL) error2(AREF, PSTR("array needs one subscript"));
-  return *getarray(array, x, y);
+  return *getarray(AREF, array, x, y);
 }
 
 object *fn_assoc (object *args, object *env) {
@@ -3813,6 +3850,15 @@ object *fn_listlibrary (object *args, object *env) {
 
 // Format
 
+void formaterr (object *formatstr, PGM_P string, int p) {
+  pln(pserial); indent(4, ' ', pserial); printstring(formatstr, pserial); pln(pserial);
+  indent(p+5, ' ', pserial); pserial('^');
+  errorsub(FORMAT, string);
+  pln(pserial);
+  GCStack = NULL;
+  longjmp(exception, 1);
+}
+
 object *fn_format (object *args, object *env) {
   (void) env;
   pfun_t pfun = pserial;
@@ -3821,6 +3867,7 @@ object *fn_format (object *args, object *env) {
   if (output == nil) { obj = startstring(FORMAT); pfun = pstr; }
   else if (output != tee) pfun = pstreamfun(args);
   object *formatstr = second(args);
+  if (!stringp(formatstr)) error(FORMAT, notastring, formatstr);
   object *save = NULL;
   args = cddr(args);
   int len = stringlength(formatstr);
@@ -3834,7 +3881,7 @@ object *fn_format (object *args, object *env) {
       if (comma && quote) { pad = ch; comma = false, quote = false; }
       else if (ch == '\'') {
         if (comma) quote = true; 
-        else error(FORMAT, PSTR("quote not valid at position"), number(n));
+        else formaterr(formatstr, PSTR("quote not valid"), n);
       }
       else if (ch == '~') { pfun('~'); tilde = false; }
       else if (ch >= '0' && ch <= '9') width = width*10 + ch - '0';
@@ -3842,18 +3889,18 @@ object *fn_format (object *args, object *env) {
       else if (ch == '%') { pln(pfun); tilde = false; }
       else if (ch == '&') { pfl(pfun); tilde = false; }
       else if (ch == '{') {
-        if (save != NULL) error(FORMAT, PSTR("can't nest ~{ at position"), number(n));
-        if (args == NULL) error(FORMAT, PSTR("missing argument at position"), number(n));
-        if (!listp(first(args))) error(FORMAT, PSTR("argument is not a list at position"), number(n));
+        if (save != NULL) formaterr(formatstr, PSTR("can't nest ~{"), n);
+        if (args == NULL) formaterr(formatstr, PSTR("missing argument"), n);
+        if (!listp(first(args))) formaterr(formatstr, notalist, n);
         save = args; args = first(args); bra = n; tilde = false;
       }
       else if (ch == '}') {
-        if (save == NULL) error(FORMAT, PSTR("no matching ~{ at position"), number(n));
+        if (save == NULL) formaterr(formatstr, PSTR("no matching ~{"), n);
         if (args == NULL) { args = cdr(save); save = NULL; } else n = bra; 
         tilde = false;
       }
       else if (ch2 == 'A' || ch2 == 'S' || ch2 == 'D' || ch2 == 'G' || ch2 == 'X') {
-        if (args == NULL) error(FORMAT, PSTR("missing argument at position"), number(n));
+        if (args == NULL) formaterr(formatstr, PSTR("missing argument"), n);
         object *arg = first(args); args = cdr(args);
         w = max(width-atomwidth(arg),0); tilde = false;
         if (ch2 == 'A') { prin1object(arg, pfun); indent(w, pad, pfun); }
@@ -3862,7 +3909,7 @@ object *fn_format (object *args, object *env) {
         else if (ch2 == 'X' && integerp(arg)) { indent(max(width-hexwidth(arg),0), pad, pfun); pinthex(arg->integer, pfun); }
         else if (ch2 == 'X') { indent(w, pad, pfun); prin1object(arg, pfun); }
         tilde = false;
-      } else error(FORMAT, PSTR("invalid directive at position"), number(n));
+      } else formaterr(formatstr, PSTR("invalid directive"), n);
     } else {
       if (ch == '~') { tilde = true; pad = ' '; width = 0; comma = false; quote = false; }
       else pfun(ch);
@@ -4724,7 +4771,7 @@ void Highlight (uint8_t p, uint8_t invert) {
     esc(p, 'D');
     if (invert) hilight('7');
     Serial.write('(');
-    esc(p-2, 'C');
+    if (p>2) esc(p-2, 'C');
     Serial.write(')');
     if (invert) hilight('0');
   }
@@ -4851,7 +4898,9 @@ object *nextitem (gfun_t gfun) {
       object *result = eval(read(gfun), NULL);
       clrflag(NOESC);
       return result;
-    } else error2(0, PSTR("illegal character after #"));
+    }
+    else if (ch == '(') { LastChar = ch; return listtovector(read(gfun)); }
+    else if (ch == '2' && (gfun() & ~0x20) == 'A') return listto2darray(read(gfun));else error2(0, PSTR("illegal character after #"));
     ch = gfun();
   }
   int valid; // 0=undecided, -1=invalid, +1=valid
@@ -4960,7 +5009,7 @@ void setup () {
   initworkspace();
   initenv();
   initsleep();
-  pfstring(PSTR("uLisp 3.3 Beta "), pserial); pln(pserial);
+  pfstring(PSTR("uLisp 3.2 Beta 2 "), pserial); pln(pserial);
 }
 
 // Read/Evaluate/Print loop
@@ -4968,7 +5017,7 @@ void setup () {
 void repl (object *env) {
   for (;;) {
     randomSeed(micros());
-    gc(NULL, env);
+    // gc(NULL, env);
     #if defined (printfreespace)
     pint(Freespace, pserial);
     #endif
