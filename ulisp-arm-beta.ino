@@ -1,4 +1,4 @@
-/* uLisp ARM 3.2 Beta 2 - www.ulisp.com
+/* uLisp ARM 3.2 Beta 3 - www.ulisp.com
    David Johnson-Davies - www.technoblogy.com - unreleased
 
    Licensed under the MIT license: https://opensource.org/licenses/MIT
@@ -48,7 +48,7 @@ const char LispLibrary[] PROGMEM = "";
 #define push(x, y)         ((y) = cons((x),(y)))
 #define pop(y)             ((y) = cdr(y))
 
-#define integerp(x)        ((x) != NULL && ((x)->type == NUMBER || (x)->type == NUMHEX))
+#define integerp(x)        ((x) != NULL && (x)->type == NUMBER)
 #define floatp(x)          ((x) != NULL && (x)->type == FLOAT)
 #define symbolp(x)         ((x) != NULL && (x)->type == SYMBOL)
 #define stringp(x)         ((x) != NULL && (x)->type == STRING)
@@ -72,7 +72,7 @@ const char LispLibrary[] PROGMEM = "";
 // Constants
 
 const int TRACEMAX = 3; // Number of traced functions
-enum type { ZZERO=0, SYMBOL=2, CODE=4, NUMBER=6, NUMHEX=8, STREAM=10, CHARACTER=12, FLOAT=14, ARRAY=16, STRING=18, PAIR=20 };  // ARRAY STRING and PAIR must be last
+enum type { ZZERO=0, SYMBOL=2, CODE=4, NUMBER=6, STREAM=8, CHARACTER=10, FLOAT=12, ARRAY=14, STRING=16, PAIR=18 };  // ARRAY STRING and PAIR must be last
 enum token { UNUSED, BRA, KET, QUO, DOT };
 enum stream { SERIALSTREAM, I2CSTREAM, SPISTREAM, SDSTREAM, STRINGSTREAM };
 
@@ -225,7 +225,7 @@ unsigned int TraceDepth[TRACEMAX];
 
 object *GlobalEnv;
 object *GCStack = NULL;
-object *GlobalString = NULL;
+object *GlobalString;
 int GlobalStringIndex = 0;
 int PrintCount = 0;
 char BreakLevel = 0;
@@ -240,14 +240,53 @@ volatile char Flags = 0b00001; // PRINTREADABLY set by default
 object *tee;
 object *tf_progn (object *form, object *env);
 object *eval (object *form, object *env);
-object *read ();
+object *read (gfun_t gfun);
 void repl(object *env);
 void printobject (object *form, pfun_t pfun);
 char *lookupbuiltin (symbol_t name);
 intptr_t lookupfn (symbol_t name);
 int builtin (char* n);
-void error (symbol_t fname, PGM_P string, object *symbol);
-void error2 (symbol_t fname, PGM_P string);
+
+// Error handling
+
+void errorsub (symbol_t fname, PGM_P string) {
+  pfl(pserial); pfstring(PSTR("Error: "), pserial);
+  if (fname) {
+    pserial('\''); 
+    pstring(symbolname(fname), pserial);
+    pfstring(PSTR("' "), pserial);
+  }
+  pfstring(string, pserial);
+}
+
+void error (symbol_t fname, PGM_P string, object *symbol) {
+  errorsub(fname, string);
+  pfstring(PSTR(": "), pserial); printobject(symbol, pserial);
+  pln(pserial);
+  GCStack = NULL;
+  longjmp(exception, 1);
+}
+
+void error2 (symbol_t fname, PGM_P string) {
+  errorsub(fname, string);
+  pln(pserial);
+  GCStack = NULL;
+  longjmp(exception, 1);
+}
+
+// Save space as these are used multiple times
+const char notanumber[] PROGMEM = "argument is not a number";
+const char notastring[] PROGMEM = "argument is not a string";
+const char notalist[] PROGMEM = "argument is not a list";
+const char notasymbol[] PROGMEM = "argument is not a symbol";
+const char notproper[] PROGMEM = "argument is not a proper list";
+const char toomanyargs[] PROGMEM = "has too many arguments";
+const char toofewargs[] PROGMEM = "has too few arguments";
+const char noargument[] PROGMEM = "missing argument";
+const char nostream[] PROGMEM = "missing stream argument";
+const char overflow[] PROGMEM = "arithmetic overflow";
+const char invalidpin[] PROGMEM = "invalid pin";
+const char resultproper[] PROGMEM = "result is not a proper list";
 
 // Set up workspace
 
@@ -282,13 +321,6 @@ inline void myfree (object *obj) {
 object *number (int n) {
   object *ptr = myalloc();
   ptr->type = NUMBER;
-  ptr->integer = n;
-  return ptr;
-}
-
-object *numhex (int n) {
-  object *ptr = myalloc();
-  ptr->type = NUMHEX;
   ptr->integer = n;
   return ptr;
 }
@@ -354,12 +386,17 @@ void markobject (object *obj) {
   unsigned int type = obj->type;
   mark(obj);
   
-  if (type >= PAIR || type == ZZERO || type == ARRAY) { // cons
+  if (type >= PAIR || type == ZZERO) { // cons
     markobject(arg);
     obj = cdr(obj);
     goto MARK;
   }
 
+  if (type == ARRAY) {
+    obj = cdr(obj);
+    goto MARK;
+  }
+  
   if (type == STRING) {
     obj = cdr(obj);
     while (obj != NULL) {
@@ -722,48 +759,6 @@ void autorunimage () {
 #endif
 }
 
-// Error handling
-
-void errorsub (symbol_t fname, PGM_P string) {
-  pfl(pserial); pfstring(PSTR("Error: "), pserial);
-  if (fname) {
-    pserial('\''); 
-    pstring(symbolname(fname), pserial);
-    pfstring(PSTR("' "), pserial);
-  }
-  pfstring(string, pserial);
-}
-
-void error (symbol_t fname, PGM_P string, object *symbol) {
-  errorsub(fname, string);
-  pfstring(PSTR(": "), pserial); printobject(symbol, pserial);
-  pln(pserial);
-  GCStack = NULL;
-  longjmp(exception, 1);
-}
-
-void error2 (symbol_t fname, PGM_P string) {
-  errorsub(fname, string);
-  pln(pserial);
-  GCStack = NULL;
-  longjmp(exception, 1);
-}
-
-// Save space as these are used multiple times
-const char notanumber[] PROGMEM = "argument is not a number";
-const char notastring[] PROGMEM = "argument is not a string";
-const char notalist[] PROGMEM = "argument is not a list";
-const char notasymbol[] PROGMEM = "argument is not a symbol";
-const char notproper[] PROGMEM = "argument is not a proper list";
-const char toomanyargs[] PROGMEM = "has too many arguments";
-const char toofewargs[] PROGMEM = "has too few arguments";
-const char noargument[] PROGMEM = "missing argument";
-const char nostream[] PROGMEM = "missing stream argument";
-const char overflow[] PROGMEM = "arithmetic overflow";
-const char invalidpin[] PROGMEM = "invalid pin";
-const char resultproper[] PROGMEM = "result is not a proper list";
-const char outputstring[] PROGMEM = "string output not available";
-
 // Tracing
 
 bool tracing (symbol_t name) {
@@ -988,7 +983,7 @@ object **getarray (symbol_t name, object *array, int x, int y) {
   else xd = dimensions->integer;
   int size = xd * yd;
   int index = x * yd + y;
-  if (index >= size || index < 0) error2(name, PSTR("index out of range"));
+  if (x >= xd || x < 0 || y >= yd || y < 0) error2(name, PSTR("index out of range"));
   int mask = max(nextpower2(size), 2)>>1;
   object **p = &car(cdr(array));
   while (mask) {
@@ -1063,7 +1058,7 @@ void indent (int spaces, char ch, pfun_t pfun) {
 object *startstring (symbol_t name) {
   object *string = myalloc();
   string->type = STRING;
-  if (GlobalString != NULL) error2(name, outputstring);
+  GlobalString = NULL;
   GlobalStringIndex = 0;
   return string;
 }
@@ -1137,7 +1132,6 @@ int gstr () {
   }
   char c = nthchar(GlobalString, GlobalStringIndex++);
   if (c != 0) return c;
-  // GlobalString = NULL;
   return '\n'; // -1?
 }
 
@@ -1635,7 +1629,6 @@ const int PPINDENT = 2;
 const int PPWIDTH = 80;
 
 void pcount (char c) {
-  // LastPrint = c; // Why?
   if (c == '\n') PrintCount++;
   PrintCount++;
 }
@@ -2062,7 +2055,6 @@ object *sp_withoutputtostring (object *args, object *env) {
   object *forms = cdr(args);
   object *result = eval(tf_progn(forms,env), env);
   string->cdr = GlobalString;
-  GlobalString = NULL;
   return string;
 }
 
@@ -2532,10 +2524,17 @@ object *fn_makearray (object *args, object *env) {
   int xd, yd = 1;
   object *dimensions = first(args);
   if (listp(dimensions)) {
-    if (dimensions == NULL) error2(MAKEARRAY, PSTR("dimensions can't be nil"));
-    else if (cdr(dimensions) == NULL) { dimensions = cdr(dimensions); xd = checkinteger(MAKEARRAY, dimensions); }
-    else if (cddr(dimensions) != NULL) error2(MAKEARRAY, PSTR("only two dimensions supported"));
-    else xd = checkinteger(MAKEARRAY, first(dimensions)); yd = checkinteger(MAKEARRAY, second(dimensions));
+    if (dimensions == NULL) {
+      error2(MAKEARRAY, PSTR("dimensions can't be nil"));
+    } else if (cdr(dimensions) == NULL) {
+      dimensions = car(dimensions);
+      xd = checkinteger(MAKEARRAY, dimensions);
+    } else if (cddr(dimensions) != NULL) {
+      error2(MAKEARRAY, PSTR("only two dimensions supported"));
+    } else { 
+      xd = checkinteger(MAKEARRAY, first(dimensions));
+      yd = checkinteger(MAKEARRAY, second(dimensions));
+    }
   } else xd = checkinteger(MAKEARRAY, dimensions);
   if (cdr(args) != NULL) {
     object *var = second(args);
@@ -3429,7 +3428,6 @@ object *fn_princtostring (object *args, object *env) {
   object *obj = startstring(PRINCTOSTRING);
   prin1object(arg, pstr);
   obj->cdr = GlobalString;
-  GlobalString = NULL;
   return obj;
 }
 
@@ -3439,7 +3437,6 @@ object *fn_prin1tostring (object *args, object *env) {
   object *obj = startstring(PRIN1TOSTRING);
   printobject(arg, pstr);
   obj->cdr = GlobalString;
-  GlobalString = NULL;
   return obj;
 }
 
@@ -3890,7 +3887,7 @@ object *fn_format (object *args, object *env) {
       else if (ch == '&') { pfl(pfun); tilde = false; }
       else if (ch == '{') {
         if (save != NULL) formaterr(formatstr, PSTR("can't nest ~{"), n);
-        if (args == NULL) formaterr(formatstr, PSTR("missing argument"), n);
+        if (args == NULL) formaterr(formatstr, noargument, n);
         if (!listp(first(args))) formaterr(formatstr, notalist, n);
         save = args; args = first(args); bra = n; tilde = false;
       }
@@ -3900,14 +3897,15 @@ object *fn_format (object *args, object *env) {
         tilde = false;
       }
       else if (ch2 == 'A' || ch2 == 'S' || ch2 == 'D' || ch2 == 'G' || ch2 == 'X') {
-        if (args == NULL) formaterr(formatstr, PSTR("missing argument"), n);
+        if (args == NULL) formaterr(formatstr, noargument, n);
         object *arg = first(args); args = cdr(args);
         w = max(width-atomwidth(arg),0); tilde = false;
         if (ch2 == 'A') { prin1object(arg, pfun); indent(w, pad, pfun); }
         else if (ch2 == 'S') { printobject(arg, pfun); indent(w, pad, pfun); }
         else if (ch2 == 'D' || ch2 == 'G') { indent(w, pad, pfun); prin1object(arg, pfun); }
-        else if (ch2 == 'X' && integerp(arg)) { indent(max(width-hexwidth(arg),0), pad, pfun); pinthex(arg->integer, pfun); }
-        else if (ch2 == 'X') { indent(w, pad, pfun); prin1object(arg, pfun); }
+        else if (ch2 == 'X' && integerp(arg)) {
+          indent(max(width-hexwidth(arg),0), pad, pfun); pinthex(arg->integer, pfun);
+        } else if (ch2 == 'X') { indent(w, pad, pfun); prin1object(arg, pfun); }
         tilde = false;
       } else formaterr(formatstr, PSTR("invalid directive"), n);
     } else {
@@ -3916,7 +3914,7 @@ object *fn_format (object *args, object *env) {
     }
     n++;
   }
-  if (output == nil) { obj->cdr = GlobalString; GlobalString = NULL; return obj; }
+  if (output == nil) { obj->cdr = GlobalString; return obj; }
   else return nil; 
 }
 
@@ -4698,8 +4696,7 @@ void printobject (object *form, pfun_t pfun) {
       printobject(form, pfun);
     }
     pfun(')');
-  } else if (form->type == NUMHEX) { pfun('#'); pfun('x'); pinthex(form->integer, pfun); }
-  else if (integerp(form)) pint(form->integer, pfun);
+  } else if (integerp(form)) pint(form->integer, pfun);
   else if (floatp(form)) pfloat(form->single_float, pfun);
   else if (symbolp(form)) { if (form->name != NOTHING) pstring(symbolname(form->name), pfun); }
   else if (characterp(form)) pcharacter(form->integer, pfun);
@@ -4881,11 +4878,16 @@ object *nextitem (gfun_t gfun) {
     ch = gfun();
     if (ch == ' ') return (object *)DOT;
     isfloat = true;
+    
+  // Parse reader macros
   } else if (ch == '#') {
     ch = gfun();
     char ch2 = ch & ~0x20; // force to upper case
-    if (ch == '\\') base = 0; // character
-    else if (ch == '|') {
+    if (ch == '\\') { // Character
+      base = 0; ch = gfun();
+      if (isspace(ch) || ch == ')' || ch == '(') return character(ch);
+      else LastChar = ch;
+    } else if (ch == '|') {
       do { while (gfun() != '|'); }
       while (gfun() != '#');
       return nextitem(gfun);
@@ -4943,7 +4945,7 @@ object *nextitem (gfun_t gfun) {
   else if (valid == 1) {
     if (base == 10 && result > ((unsigned int)INT_MAX+(1-sign)/2)) 
       return makefloat((float)result*sign);
-    if (base == 16) return numhex(result*sign); else return number(result*sign);
+    return number(result*sign);
   } else if (base == 0) {
     if (index == 1) return character(buffer[0]);
     const char* p = ControlCodes; char c = 0;
@@ -5009,7 +5011,7 @@ void setup () {
   initworkspace();
   initenv();
   initsleep();
-  pfstring(PSTR("uLisp 3.2 Beta 2 "), pserial); pln(pserial);
+  pfstring(PSTR("uLisp 3.2 Beta 3 "), pserial); pln(pserial);
 }
 
 // Read/Evaluate/Print loop
@@ -5017,7 +5019,7 @@ void setup () {
 void repl (object *env) {
   for (;;) {
     randomSeed(micros());
-    // gc(NULL, env);
+    gc(NULL, env);
     #if defined (printfreespace)
     pint(Freespace, pserial);
     #endif
@@ -5051,7 +5053,7 @@ void loop () {
   }
   // Come here after error
   delay(100); while (Serial.available()) Serial.read();
-  clrflag(NOESC); GlobalString == NULL;
+  clrflag(NOESC);
   for (int i=0; i<TRACEMAX; i++) TraceDepth[i] = 0;
   #if defined(sdcardsupport)
   SDpfile.close(); SDgfile.close();
