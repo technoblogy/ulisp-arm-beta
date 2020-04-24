@@ -1,4 +1,4 @@
-/* uLisp ARM 3.2 Beta 3 - www.ulisp.com
+/* uLisp ARM 3.2 Beta 4 - www.ulisp.com
    David Johnson-Davies - www.technoblogy.com - unreleased
 
    Licensed under the MIT license: https://opensource.org/licenses/MIT
@@ -572,7 +572,7 @@ void FlashBeginWrite (int blocks) {
     FlashWriteEnable();
     digitalWrite(ssel, 0);
     FlashWrite(BLOCK64K);
-    FlashWrite(0); FlashWrite(b); FlashWrite(0);
+    FlashWrite(b); FlashWrite(0); FlashWrite(0);
     digitalWrite(ssel, 1);
     FlashBusy();
   }
@@ -640,7 +640,7 @@ int saveimage (object *arg) {
   if (!(arg == NULL || listp(arg))) error(SAVEIMAGE, PSTR("illegal argument"), arg);
   if (!FlashSetup()) error2(SAVEIMAGE, PSTR("no DataFlash found."));
   // Save to DataFlash
-  int bytesneeded = imagesize*8 + SYMBOLTABLESIZE + 20;
+  int bytesneeded = 20 + SYMBOLTABLESIZE + CODESIZE + imagesize*8;
   if (bytesneeded > DATAFLASHSIZE) error(SAVEIMAGE, PSTR("image size too large"), number(imagesize));
   uint32_t addr = 0;
   FlashBeginWrite((bytesneeded+65535)/65536);
@@ -2536,6 +2536,7 @@ object *fn_makearray (object *args, object *env) {
       yd = checkinteger(MAKEARRAY, second(dimensions));
     }
   } else xd = checkinteger(MAKEARRAY, dimensions);
+  if (xd < 0 || yd < 0) error2(MAKEARRAY, PSTR("dimension can't be negative"));
   if (cdr(args) != NULL) {
     object *var = second(args);
     if (!symbolp(var) || var->name != INITIALELEMENT)
