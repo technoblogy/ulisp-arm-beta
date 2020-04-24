@@ -1,4 +1,4 @@
-/* uLisp ARM 3.2 Beta 4 - www.ulisp.com
+/* uLisp ARM 3.2 Beta 5 - www.ulisp.com
    David Johnson-Davies - www.technoblogy.com - unreleased
 
    Licensed under the MIT license: https://opensource.org/licenses/MIT
@@ -979,8 +979,8 @@ object *makearray (int xd, int yd, object *dimensions, object *def) {
 object **getarray (symbol_t name, object *array, int x, int y) {
   object *dimensions = cddr(array);
   int xd, yd = 1;
-  if (listp(dimensions)) { xd = first(dimensions)->integer; yd = second(dimensions)->integer; }
-  else xd = dimensions->integer;
+  xd = first(dimensions)->integer;
+  if (cdr(dimensions) != NULL) yd = second(dimensions)->integer;
   int size = xd * yd;
   int index = x * yd + y;
   if (x >= xd || x < 0 || y >= yd || y < 0) error2(name, PSTR("index out of range"));
@@ -995,7 +995,7 @@ object **getarray (symbol_t name, object *array, int x, int y) {
 
 object *listtovector (object *list) {
   int xd = listlength(0, list);
-  object *array = makearray(xd, 1, number(xd), NULL);
+  object *array = makearray(xd, 1, cons(number(xd), NULL), NULL);
   int p = 0;
   while (list != NULL) {
     object **loc = getarray(0, array, p++, 0);
@@ -1006,9 +1006,10 @@ object *listtovector (object *list) {
 }
 
 object *listto2darray (object *list) {
-  int xd = listlength(0, list);
-  if (list == NULL || !listp(first(list))) error2(0, PSTR("initial contents not 2d array"));
-  int yd = listlength(0, first(list));
+  int yd, xd = listlength(0, list);
+  if (list == NULL) yd = 0;
+  else if (listp(first(list))) yd = listlength(0, first(list));
+  else error2(0, PSTR("initial contents not 2d array"));
   object *array = makearray(xd, yd, cons(number(xd), cons(number(yd), NULL)), NULL);
   int x = 0;
   while (list != NULL) {
@@ -1027,9 +1028,17 @@ object *listto2darray (object *list) {
 
 void printarray (object *array, pfun_t pfun) {
   object *dimensions = cddr(array);
-  if (listp(dimensions)) {
-    int xd = first(dimensions)->integer, yd = second(dimensions)->integer;
-    pfun('#'); pfstring(PSTR("2A("), pfun);
+  int xd = first(dimensions)->integer;
+  pfun('#');
+  if (cdr(dimensions) == NULL) {
+    pfun('(');
+    for (int x=0; x<xd; x++) {
+      if (x) pfun(' ');
+      printobject(*getarray(0, array, x, 0), pfun);
+    }
+  } else {
+    int yd = second(dimensions)->integer;
+    pfstring(PSTR("2A("), pfun);
     for (int x=0; x<xd; x++) {
       if (x) pfun(' '); pfun('(');
       for (int y=0; y<yd; y++) {
@@ -1038,13 +1047,6 @@ void printarray (object *array, pfun_t pfun) {
       }
       pfun(')');
     }  
-  } else {
-    pfun('#'); pfun('(');
-    int xd = dimensions->integer;
-    for (int x=0; x<xd; x++) {
-      if (x) pfun(' ');
-      printobject(*getarray(0, array, x, 0), pfun);
-    }
   }
   pfun(')');
 }
@@ -2523,19 +2525,14 @@ object *fn_makearray (object *args, object *env) {
   object *def = nil;
   int xd, yd = 1;
   object *dimensions = first(args);
-  if (listp(dimensions)) {
-    if (dimensions == NULL) {
-      error2(MAKEARRAY, PSTR("dimensions can't be nil"));
-    } else if (cdr(dimensions) == NULL) {
-      dimensions = car(dimensions);
-      xd = checkinteger(MAKEARRAY, dimensions);
-    } else if (cddr(dimensions) != NULL) {
-      error2(MAKEARRAY, PSTR("only two dimensions supported"));
-    } else { 
-      xd = checkinteger(MAKEARRAY, first(dimensions));
-      yd = checkinteger(MAKEARRAY, second(dimensions));
-    }
-  } else xd = checkinteger(MAKEARRAY, dimensions);
+  if (dimensions == NULL) error2(MAKEARRAY, PSTR("dimensions can't be nil"));
+  else if (atom(dimensions)) dimensions = cons(dimensions, NULL);
+ 
+  if (cdr(dimensions) == NULL) xd = checkinteger(MAKEARRAY, first(dimensions));
+  else if (cddr(dimensions) == NULL) {
+    xd = checkinteger(MAKEARRAY, first(dimensions));
+    yd = checkinteger(MAKEARRAY, second(dimensions));
+  } else error2(MAKEARRAY, PSTR("only two dimensions supported"));
   if (xd < 0 || yd < 0) error2(MAKEARRAY, PSTR("dimension can't be negative"));
   if (cdr(args) != NULL) {
     object *var = second(args);
